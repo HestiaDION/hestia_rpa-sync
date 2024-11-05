@@ -52,6 +52,41 @@ def sync_plano(cursor_db1, cursor_db2, connection_db2):
         connection_db2.rollback()
         logging.error(f"Erro ao sincronizar tabela Plano: {e}")
 
+# Faz a sincronizacao da tabela plano_vantagens
+def sync_plano_vantagens(cursor_db1, cursor_db2, connection_db2):
+    try:
+        cursor_db1.execute("SELECT uId, cVantagem, cAtivo, uId_Plano FROM Plano_vantagem;")
+        vantagem_records_db1 = cursor_db1.fetchall()
+        logging.info("Dados de vantagens de plano obtidos do Banco 1 para sincronizacao.")
+
+        for vantagem_record in vantagem_records_db1:
+            vantagem_id, vantagem_nome, vantagem_ativo, plano_id_db1 = vantagem_record
+            vantagem_ativo_bool = True if vantagem_ativo == '1' else False
+
+            cursor_db2.execute("SELECT id FROM plano_vantagens WHERE id = %s;", (vantagem_id,))
+            vantagem_record_db2 = cursor_db2.fetchone()
+
+            if vantagem_record_db2:
+                cursor_db2.execute("""
+                    UPDATE plano_vantagens
+                    SET vantagem = %s, ativo = %s, plano_id = %s
+                    WHERE id = %s;
+                """, (vantagem_nome, vantagem_ativo_bool, plano_id_db1, vantagem_id))
+                logging.info(f"Registro da vantagem com UUID {vantagem_id} atualizado no Banco 2.")
+            else:
+                cursor_db2.execute("""
+                    INSERT INTO plano_vantagens (id, vantagem, ativo, plano_id)
+                    VALUES (%s, %s, %s, %s);
+                """, (vantagem_id, vantagem_nome, vantagem_ativo_bool, plano_id_db1))
+                logging.info(f"Novo registro da vantagem com UUID {vantagem_id} inserido no Banco 2.")
+
+        connection_db2.commit()
+        logging.info('Sincronizacao de plano_vantagens finalizada.')
+
+    except Exception as e:
+        connection_db2.rollback()
+        logging.error(f"Erro ao sincronizar tabela Plano_vantagens: {e}")
+
 # Funcao para conectar ao banco de dados
 def conectar_banco(uri):
     try:
@@ -62,7 +97,6 @@ def conectar_banco(uri):
     except Exception as e:
         logging.error(f"Erro ao conectar ao banco de dados: {e}")
         return None, None
-    
 
 # Funcao principal
 def main():
@@ -76,6 +110,7 @@ def main():
     if cursor_db1 and cursor_db2:
         try:
             sync_plano(cursor_db1, cursor_db2, connection_db2)
+            sync_plano_vantagens(cursor_db1, cursor_db2, connection_db2)
 
             logging.info("Sincronizacao completa com sucesso.")
         except Exception as error:

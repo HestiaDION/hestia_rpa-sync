@@ -18,6 +18,40 @@ client = MongoClient(getenv('URI_MONGODB'))
 db = client[getenv('MONGO_DBNAME')]
 collection = db[getenv('MONGO_COLLECTION')]
 
+# Funcao para sincronizar a tabela plano
+def sync_plano(cursor_db1, cursor_db2, connection_db2):
+    try:
+        cursor_db1.execute("SELECT uId, cNome, cTipoUsuario, nValor, cDescricao FROM Plano;")
+        plano_records_db1 = cursor_db1.fetchall()
+        logging.info("Dados de plano obtidos do Banco 1 para sincronizacao.")
+
+        for plano_record in plano_records_db1:
+            plano_id, plano_nome, plano_tipo_usuario, plano_valor, plano_descricao = plano_record
+
+            cursor_db2.execute("SELECT id FROM plano WHERE id = %s;", (plano_id,))
+            plano_record_db2 = cursor_db2.fetchone()
+
+            if plano_record_db2:
+                cursor_db2.execute("""
+                    UPDATE plano
+                    SET nome = %s, tipo_conta = %s, descricao = %s, valor = %s, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = %s;
+                """, (plano_nome, plano_tipo_usuario, plano_descricao, plano_valor, plano_id))
+                logging.info(f"Registro do plano com UUID {plano_id} atualizado no Banco 2.")
+            else:
+                cursor_db2.execute("""
+                    INSERT INTO plano (id, nome, tipo_conta, descricao, valor, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+                """, (plano_id, plano_nome, plano_tipo_usuario, plano_descricao, plano_valor))
+                logging.info(f"Novo registro do plano com UUID {plano_id} inserido no Banco 2.")
+
+        connection_db2.commit()
+        logging.info('Sincronizacao de plano finalizada.')
+
+    except Exception as e:
+        connection_db2.rollback()
+        logging.error(f"Erro ao sincronizar tabela Plano: {e}")
+
 # Funcao para conectar ao banco de dados
 def conectar_banco(uri):
     try:
@@ -41,6 +75,8 @@ def main():
 
     if cursor_db1 and cursor_db2:
         try:
+            sync_plano(cursor_db1, cursor_db2, connection_db2)
+
             logging.info("Sincronizacao completa com sucesso.")
         except Exception as error:
             logging.error(f"Erro ao realizar a sincronizacao: {error}")

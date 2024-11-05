@@ -1,0 +1,6 @@
+psycopg2
+requests
+python-dotenv
+pymongo
+python-dateutil
+logging

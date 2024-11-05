@@ -3,8 +3,10 @@ import psycopg2
 import logging
 from os import getenv
 from dotenv import load_dotenv
-from pymongo import MongoClient
+from datetime import datetime
+from dateutil.relativedelta import relativedelta
 from random import randint
+from pymongo import MongoClient
 
 # Configuracao do logging
 logging.basicConfig(
@@ -19,6 +21,17 @@ client = MongoClient(getenv('URI_MONGODB'))
 db = client[getenv('MONGO_DBNAME')]
 collection = db[getenv('MONGO_COLLECTION')]
 
+# Funcao para conectar ao banco de dados
+def conectar_banco(uri):
+    try:
+        conexao = psycopg2.connect(uri)
+        cursor = conexao.cursor()
+        logging.info("Conexao com o banco de dados estabelecida com sucesso.")
+        return conexao, cursor
+    except Exception as e:
+        logging.error(f"Erro ao conectar ao banco de dados: {e}")
+        return None, None
+    
 # Funcao para obter a senha do usuário a partir do e-mail
 def get_senha(email):
     try:
@@ -226,16 +239,65 @@ def sync_anunciante(cursor_db1, cursor_db2, connection_db1, connection_db2):
         connection_db2.rollback()
         logging.error(f"Erro ao sincronizar tabela Anunciante: {e}")
 
-# Funcao para conectar ao banco de dados
-def conectar_banco(uri):
+# Funcao para sincronizar a tabela pagamento
+def sync_pagamento(cursor_db1, cursor_db2, connection_db1, connection_db2):
     try:
-        conexao = psycopg2.connect(uri)
-        cursor = conexao.cursor()
-        logging.info("Conexao com o banco de dados estabelecida com sucesso.")
-        return conexao, cursor
+        cursor_db1.execute("SELECT * FROM Pagamento;")
+        pagamento_records_db1 = cursor_db1.fetchall()
+        logging.info("Dados de Pagamento obtidos do Banco 1 para sincronizacao.")
+
+        cursor_db2.execute("SELECT * FROM pagamento_plano;")
+        pagamento_records_db2 = cursor_db2.fetchall()
+        logging.info("Dados de Pagamento obtidos do Banco 2 para comparacao.")
+
+        ids_db1 = [x[0] for x in pagamento_records_db1]
+
+        for pagamento in pagamento_records_db2:
+            (uid, nome, email, plano_id, pago, created_at, updated_at) = pagamento
+            if uid not in ids_db1:
+                ativo = '0'
+                cursor_db2.execute("SELECT * FROM get_user_uuid_by_email(%s);", (email,))
+                info_user = cursor_db2.fetchone()
+                tipo_user, uid_user = info_user
+
+                dt_fim = datetime.now() + relativedelta(months=1)
+                cursor_db2.execute("SELECT valor FROM plano WHERE id = %s;", (plano_id,))
+                total = cursor_db2.fetchone()[0]
+
+                if tipo_user == 'anunciante':
+                    cursor_db1.execute("""
+                        INSERT INTO Pagamento 
+                        (uId, cAtivo, dDtFim, nPctDesconto, nTotal, uId_Anunciante, uId_Plano, uId_Universitario)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s);
+                    """, (uid, ativo, dt_fim, 0, total, uid_user, plano_id, None))
+                else:
+                    cursor_db1.execute("""
+                        INSERT INTO Pagamento 
+                        (uId, cAtivo, dDtFim, nPctDesconto, nTotal, uId_Anunciante, uId_Plano, uId_Universitario)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s);
+                    """, (uid, ativo, dt_fim, 0, total, None, plano_id, uid_user))
+
+                logging.info(f"Novo registro de pagamento com UUID {uid} inserido no Banco 1.")
+
+        for pagamento in pagamento_records_db1:
+            (uid, cAtivo, dDtFim, nPctDesconto, nTotal, uId_Anunciante, uId_Plano, uId_Universitario) = pagamento
+            pago = cAtivo == '1'
+
+            cursor_db2.execute("""
+                UPDATE pagamento_plano SET
+                pago = %s
+                WHERE id = %s;
+            """, (pago, uid))
+            logging.info(f"Registro de pagamento com UUID {uid} atualizado no Banco 2.")
+
+        connection_db1.commit()
+        connection_db2.commit()
+        logging.info("Sincronizacao de pagamento finalizada.")
+
     except Exception as e:
-        logging.error(f"Erro ao conectar ao banco de dados: {e}")
-        return None, None
+        connection_db1.rollback()
+        connection_db2.rollback()
+        logging.error(f"Erro ao sincronizar tabela Pagamento: {e}")
 
 # Funcao principal
 def main():
@@ -252,6 +314,7 @@ def main():
             sync_plano_vantagens(cursor_db1, cursor_db2, connection_db2)
             sync_universitario(cursor_db1, cursor_db2, connection_db1, connection_db2)
             sync_anunciante(cursor_db1, cursor_db2, connection_db1, connection_db2)
+            sync_pagamento(cursor_db1, cursor_db2, connection_db1, connection_db2)
 
             logging.info("Sincronizacao completa com sucesso.")
         except Exception as error:

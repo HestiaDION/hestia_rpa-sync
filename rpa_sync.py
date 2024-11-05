@@ -4,6 +4,7 @@ import logging
 from os import getenv
 from dotenv import load_dotenv
 from pymongo import MongoClient
+from random import randint
 
 # Configuracao do logging
 logging.basicConfig(
@@ -17,6 +18,24 @@ load_dotenv()
 client = MongoClient(getenv('URI_MONGODB'))
 db = client[getenv('MONGO_DBNAME')]
 collection = db[getenv('MONGO_COLLECTION')]
+
+# Funcao para obter a senha do usuário a partir do e-mail
+def get_senha(email):
+    try:
+        user = collection.find_one({'email': email})
+        return user['senha']
+    except Exception as e:
+        logging.error(f"Erro ao obter a senha para o email {email}: {e}")
+        return ""
+    
+# Funcao para obter a foto de perfil do usuário a partir do e-mail
+def get_foto_perfil(email):
+    try:
+        user = collection.find_one({'email': email})
+        return user['urlFoto']
+    except Exception as e:
+        logging.error(f"Erro ao obter a foto de perfil para o email {email}: {e}")
+        return ""
 
 # Funcao para sincronizar a tabela plano
 def sync_plano(cursor_db1, cursor_db2, connection_db2):
@@ -87,6 +106,67 @@ def sync_plano_vantagens(cursor_db1, cursor_db2, connection_db2):
         connection_db2.rollback()
         logging.error(f"Erro ao sincronizar tabela Plano_vantagens: {e}")
 
+# Funcao para sincronizar a tabela universitario
+def sync_universitario(cursor_db1, cursor_db2, connection_db1, connection_db2):
+    try:
+        # Captura os dados da tabela do banco 1
+        cursor_db1.execute("SELECT * FROM Universitario;")
+        universitario_records_db1 = cursor_db1.fetchall()
+        logging.info("Dados de Universitário obtidos do Banco 1 para sincronizacao.")
+
+        # Captura os dados da tabela do banco 2
+        cursor_db2.execute("SELECT * FROM universitario;")
+        universitario_records_db2 = cursor_db2.fetchall()
+        logging.info("Dados de Universitário obtidos do Banco 2 para comparacao.")
+
+        ids_db1 = [x[0] for x in universitario_records_db1]
+
+        for universitario in universitario_records_db2:
+            (uid, email, nome, dne, dt_nascimento, genero, prefixo, telefone, municipio, universidade,
+             plano_id, bio, tipo_conta, created_at, updated_at) = universitario
+            
+            if uid not in ids_db1:
+                senha = get_senha(email)
+                foto_perfil = get_foto_perfil(email)
+                plano = '1' if plano_id else '0'
+                
+                username = f'{nome}{randint(10000, 99999)}'
+
+                cursor_db1.execute("""
+                    INSERT INTO Universitario 
+                    (uId, cDne, cNome, cUsername, cEmail, cSenha, dDtNascimento, cGenero,
+                     cMunicipio, cPrefixo, cTel, cPlano, cFotoPerfil, cDescricao, cNmFaculdade)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+                """, (uid, dne, nome, username, email, senha, dt_nascimento, genero, municipio, prefixo, telefone,
+                      plano, foto_perfil, bio, universidade))
+                logging.info(f"Novo registro de universitario com UUID {uid} inserido no Banco 1.")
+
+        for universitario in universitario_records_db1:
+            (uId, cDne, cNome, cUsername, cEmail, cSenha, dDtNascimento, cGenero, cMunicipio,
+             cPrefixo, cTel, cPlano, cFotoPerfil, cDescricao, uId_Anuncio, cNmFaculdade) = universitario
+
+            plano = None if cPlano == '0' else cursor_db2.execute(
+                "SELECT plano_id FROM universitario WHERE id = %s", (uId,)
+            ).fetchone()[0]
+
+            cursor_db2.execute("""
+                UPDATE universitario SET
+                email = %s, nome = %s, dne = %s, dt_nascimento = %s, genero = %s, prefixo = %s,
+                telefone = %s, municipio = %s, universidade = %s, plano_id = %s, bio = %s
+                WHERE id = %s;
+            """, (cEmail, cNome, cDne, dDtNascimento, cGenero, cPrefixo, cTel, cMunicipio, cNmFaculdade,
+                  plano, cDescricao, uId))
+            logging.info(f"Registro de universitario com UUID {uId} atualizado no Banco 2.")
+
+        connection_db1.commit()
+        connection_db2.commit()
+        logging.info("Sincronizacao de universitário finalizada.")
+
+    except Exception as e:
+        connection_db1.rollback()
+        connection_db2.rollback()
+        logging.error(f"Erro ao sincronizar tabela Universitario: {e}")
+
 # Funcao para conectar ao banco de dados
 def conectar_banco(uri):
     try:
@@ -111,6 +191,7 @@ def main():
         try:
             sync_plano(cursor_db1, cursor_db2, connection_db2)
             sync_plano_vantagens(cursor_db1, cursor_db2, connection_db2)
+            sync_universitario(cursor_db1, cursor_db2, connection_db1, connection_db2)
 
             logging.info("Sincronizacao completa com sucesso.")
         except Exception as error:
